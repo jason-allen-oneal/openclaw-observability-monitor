@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { apiGet, ApiStatus, EventRow, SnapshotRow } from './api';
+import { apiGet, ApiOverview, ApiStatus, EventRow, SnapshotRow } from './api';
 
 type Tab = 'overview' | 'sessions' | 'subagents' | 'cron' | 'feed' | 'search';
 
@@ -123,24 +123,166 @@ export default function App() {
   );
 }
 
+function msToHuman(ms: number) {
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m ${ss}s`;
+  if (m > 0) return `${m}m ${ss}s`;
+  return `${ss}s`;
+}
+
+function fmtPct(n: number) {
+  if (!Number.isFinite(n)) return '—';
+  return `${n.toFixed(2)}%`;
+}
+
 function Overview() {
+  const [ov, setOv] = useState<ApiOverview | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const data = await apiGet<ApiOverview>('/api/overview');
+      setOv(data);
+      setErr(null);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+    const t = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(t);
+  }, []);
+
+  const byType = ov?.events?.byType ?? {};
+  const maxCount = Math.max(1, ...Object.values(byType));
+  const typeRows = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+
   return (
-    <div className="cards">
+    <div style={{ display: 'grid', gap: 12 }}>
+      {err ? <div className="card" style={{ borderColor: 'var(--danger)' }}>{err}</div> : null}
+
+      <div className="cards">
+        <div className="card">
+          <div className="cardTitle">At-a-glance</div>
+          <div className="small">Ops summary (refreshes every ~4s).</div>
+          <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+            <div>Server uptime: <span style={{ color: 'var(--muted)' }}>{ov ? msToHuman(ov.server.upMs) : '—'}</span></div>
+            <div>Gateway: <span style={{ color: ov?.gateway.connected ? 'var(--ok)' : 'var(--danger)' }}>{ov?.gateway.connected ? 'CONNECTED' : 'OFFLINE'}</span></div>
+            <div>Gateway uptime (since monitor start): <span style={{ color: 'var(--muted)' }}>{ov ? fmtPct(ov.gateway.uptimePct) : '—'}</span></div>
+            <div>Active sessions: <span style={{ color: 'var(--muted)' }}>{ov?.sessions.count ?? '—'}</span></div>
+            <div>Cron jobs: <span style={{ color: 'var(--muted)' }}>{ov?.cron.count ?? '—'}</span></div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="cardTitle">Event volume (last hour)</div>
+          <div className="small">Total: {ov?.events.lastHourTotal ?? '—'} events</div>
+          <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+            {typeRows.length === 0 ? <div className="small">No events captured yet.</div> : null}
+            {typeRows.slice(0, 8).map(([t, c]) => (
+              <div key={t} style={{ display: 'grid', gridTemplateColumns: '88px 1fr 54px', gap: 10, alignItems: 'center' }}>
+                <div className="small">{t}</div>
+                <div style={{ height: 8, background: 'rgba(255,255,255,0.05)', borderRadius: 999, overflow: 'hidden' }}>
+                  <div style={{ width: `${(c / maxCount) * 100}%`, height: '100%', background: 'var(--accent)' }} />
+                </div>
+                <div className="small" style={{ textAlign: 'right' }}>{c}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="cardTitle">Next cron</div>
+          <div className="small">Soonest scheduled run.</div>
+          <div style={{ marginTop: 10 }}>
+            {ov?.cron.next ? (
+              <>
+                <div style={{ color: 'var(--accent)', fontWeight: 750 }}>{ov.cron.next.name ?? ov.cron.next.id ?? 'job'}</div>
+                <div className="small" style={{ marginTop: 6 }}>
+                  Next: {ov.cron.next.nextRunAtMs ? fmt(ov.cron.next.nextRunAtMs) : '—'}
+                </div>
+                <div className="small">Enabled: {String(ov.cron.next.enabled ?? '—')}</div>
+              </>
+            ) : (
+              <div className="small">No cron data yet.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="cards">
+        <div className="card">
+          <div className="cardTitle">Top context pressure</div>
+          <div className="small">Highest drift.pressure right now.</div>
+          <div style={{ marginTop: 10 }}>
+            {ov?.sessions.topPressure?.length ? (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Session</th>
+                    <th>Pressure</th>
+                    <th>Tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ov.sessions.topPressure.map((s: any) => (
+                    <tr key={s.key}>
+                      <td style={{ color: 'var(--accent)' }}>{s.key}</td>
+                      <td className="small">{s.drift?.pressure ?? 0}%</td>
+                      <td className="small">{(s.totalTokens ?? 0).toLocaleString()} / {(s.contextTokens ?? 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="small">No session drift data yet.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="cardTitle">Top estimated cost</div>
+          <div className="small">Highest drift.cost (rough estimate).</div>
+          <div style={{ marginTop: 10 }}>
+            {ov?.sessions.topCost?.length ? (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Session</th>
+                    <th>Cost</th>
+                    <th>Model</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ov.sessions.topCost.map((s: any) => (
+                    <tr key={s.key}>
+                      <td style={{ color: 'var(--accent)' }}>{s.key}</td>
+                      <td style={{ color: 'var(--ok)' }}>${s.drift?.cost?.toFixed(4) ?? '0.0000'}</td>
+                      <td className="small">{s.model ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="small">No session drift data yet.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="card">
         <div className="cardTitle">What this is</div>
         <div className="small">
-          This dashboard persists an activity feed across restarts. Next steps: sessions list, cron calendar, sub-agent view, and unified search.
+          Local ops console for OpenClaw. Data sources: Gateway WebSocket event feed + periodic snapshots (sessions.list, cron.list).
+          Storage: SQLite at <span style={{ color: 'var(--muted)' }}>monitor-dashboard/state/monitor.sqlite</span>.
         </div>
-      </div>
-      <div className="card">
-        <div className="cardTitle">Data sources</div>
-        <div className="small">
-          Gateway WebSocket events (chat/agent/cron/presence), plus periodic RPC snapshots (sessions.list, cron.list).
-        </div>
-      </div>
-      <div className="card">
-        <div className="cardTitle">Storage</div>
-        <div className="small">SQLite (node:sqlite) at monitor-dashboard/state/monitor.sqlite</div>
       </div>
     </div>
   );
@@ -220,8 +362,10 @@ function Sessions() {
         <thead>
           <tr>
             <th>Key</th>
-            <th>Kind</th>
-            <th>Label</th>
+            <th>Model</th>
+            <th>Usage</th>
+            <th>Pressure</th>
+            <th>Cost (est)</th>
             <th>Updated</th>
           </tr>
         </thead>
@@ -229,8 +373,17 @@ function Sessions() {
           {sessions.map((s: any) => (
             <tr key={s.key}>
               <td style={{ color: 'var(--accent)' }}>{s.key}</td>
-              <td>{s.kind ?? ''}</td>
-              <td>{s.label ?? ''}</td>
+              <td className="small">{s.model}</td>
+              <td className="small">{(s.totalTokens ?? 0).toLocaleString()}</td>
+              <td>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 60, height: 6, background: 'rgba(255,255,255,0.05)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${s.drift?.pressure ?? 0}%`, height: '100%', background: (s.drift?.pressure ?? 0) > 80 ? 'var(--danger)' : 'var(--accent)' }} />
+                  </div>
+                  <span className="small">{s.drift?.pressure ?? 0}%</span>
+                </div>
+              </td>
+              <td style={{ color: 'var(--ok)' }}>${s.drift?.cost?.toFixed(4) ?? '0.0000'}</td>
               <td className="small">{s.updatedAt ? fmt(s.updatedAt) : ''}</td>
             </tr>
           ))}
@@ -284,7 +437,8 @@ function Subagents() {
         <thead>
           <tr>
             <th>Label</th>
-            <th>Status</th>
+            <th>Pressure</th>
+            <th>Cost</th>
             <th>Key</th>
             <th>Updated</th>
             <th>Last event</th>
@@ -294,8 +448,16 @@ function Subagents() {
           {rows.map((s: any) => (
             <tr key={s.key}>
               <td>{s.label ?? ''}</td>
-              <td>{statusFor(s)}</td>
-              <td style={{ color: 'var(--accent)' }}>{s.key}</td>
+              <td>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 40, height: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ width: `${s.drift?.pressure ?? 0}%`, height: '100%', background: 'var(--accent)' }} />
+                  </div>
+                  <span className="small">{s.drift?.pressure ?? 0}%</span>
+                </div>
+              </td>
+              <td style={{ color: 'var(--ok)' }}>${s.drift?.cost?.toFixed(4) ?? '0.0000'}</td>
+              <td style={{ color: 'var(--accent)', fontSize: 11 }}>{s.key}</td>
               <td className="small">{s.updatedAt ? fmt(s.updatedAt) : ''}</td>
               <td className="small">{s.lastEvent?.summary ?? s.lastEvent?.event ?? ''}</td>
             </tr>

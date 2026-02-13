@@ -7,6 +7,24 @@ export type ApiStatus = {
   now?: number;
 };
 
+export type ApiOverview = {
+  ok: boolean;
+  now: number;
+  server: { startedAt: number; upMs: number };
+  gateway: {
+    connected: boolean;
+    connectedSince: number | null;
+    totalConnectedMs: number;
+    uptimePct: number;
+    url: string;
+    error: any;
+  };
+  snapshots: { sessionsTs: number | null; cronTs: number | null };
+  sessions: { count: number; topPressure: any[]; topCost: any[] };
+  cron: { count: number; next: any | null };
+  events: { lastHourTotal: number; byType: Record<string, number> };
+};
+
 export type EventRow = {
   id: number;
   ts: number;

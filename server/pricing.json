@@ -1,0 +1,25 @@
+{
+  "models": {
+    "openai/gpt-4o": { "input": 0.005, "output": 0.015 },
+    "openai/gpt-4o-mini": { "input": 0.00015, "output": 0.0006 },
+    "openai/gpt-4-turbo": { "input": 0.01, "output": 0.03 },
+    "openai/gpt-5.2": { "input": 0.01, "output": 0.03 },
+    "anthropic/claude-3-5-sonnet": { "input": 0.003, "output": 0.015 },
+    "anthropic/claude-3-opus": { "input": 0.015, "output": 0.075 },
+    "anthropic/claude-3-haiku": { "input": 0.00025, "output": 0.00125 },
+    "anthropic/claude-sonnet-4-5": { "input": 0.003, "output": 0.015 },
+    "anthropic/claude-sonnet-4-5-thinking": { "input": 0.003, "output": 0.015 },
+    "google/gemini-1.5-pro": { "input": 0.00125, "output": 0.005 },
+    "google/gemini-1.5-flash": { "input": 0.000075, "output": 0.0003 },
+    "google/gemini-2.0-flash": { "input": 0.0001, "output": 0.0004 },
+    "google-antigravity/gemini-3-flash": { "input": 0.0001, "output": 0.0003 },
+    "google-antigravity/gemini-3-pro-high": { "input": 0.00125, "output": 0.00375 },
+    "gemini-3-flash": { "input": 0.0001, "output": 0.0003 },
+    "gpt-4o": { "input": 0.005, "output": 0.015 },
+    "claude-3-5-sonnet": { "input": 0.003, "output": 0.015 }
+  },
+  "default": {
+    "input": 0.002,
+    "output": 0.006
+  }
+}
