@@ -1,6 +1,14 @@
 # OpenClaw Monitor Dashboard
 
-A small observability dashboard for OpenClaw: gateway status, event feed, snapshots.
+A high-performance observability dashboard for OpenClaw: gateway status, event feed, and agent snapshots.
+
+## Features
+
+- **Device Identity Support**: Ed25519-based cryptographic handshake with the OpenClaw Gateway.
+- **Persistent Token Storage**: Securely stores issued device tokens for seamless reconnection.
+- **ZeroSignal Aesthetic**: CRT scanline effects, flickering terminal style, and monospace grid layout.
+- **Event Feed**: Real-time streaming of gateway events and agent activity.
+- **Snapshots**: View agent reasoning and internal state snapshots.
 
 ## Install
 
