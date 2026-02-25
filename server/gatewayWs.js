@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -35,9 +36,11 @@ function signDevicePayload(privateKeyPem, payload) {
 }
 
 function buildDeviceAuthPayload(params) {
-  const version = params.version ?? (params.nonce ? 'v2' : 'v1');
+  const version = params.version || 'v2';
   const scopes = params.scopes.join(',');
-  const token = params.token ?? '';
+  const token = params.token || '';
+  const nonce = params.nonce || '';
+  
   const base = [
     version,
     params.deviceId,
@@ -48,8 +51,12 @@ function buildDeviceAuthPayload(params) {
     String(params.signedAtMs),
     token
   ];
-  if (version === 'v2') base.push(params.nonce ?? '');
-  return base.join('|');
+  if (version === 'v2') {
+    base.push(nonce);
+  }
+  const payload = base.join('|');
+  // console.log(`[GatewayWs] Built payload: ${payload}`);
+  return payload;
 }
 
 class DeviceIdentityStore {
@@ -209,26 +216,35 @@ export class GatewayWs {
     const clientId = 'openclaw-control-ui';
     const clientMode = 'webchat';
 
-    const authToken = this._tokenStore.load(this._identity.deviceId, role);
-    const auth = authToken ? { token: authToken } : (this.token ? { token: this.token } : undefined);
-
+    const auth = this.token ? { token: this.token } : undefined;
     const signedAtMs = Date.now();
-    const nonce = this._connectNonce ?? undefined;
+    const nonce = (typeof this._connectNonce === 'string' && this._connectNonce.length > 0)
+      ? this._connectNonce
+      : null;
+
+    if (!nonce) {
+      // We should only send `connect` after the gateway provides a challenge nonce.
+      this.connected = false;
+      this.onStatus?.({ connected: false, error: 'missing connect.challenge nonce' });
+      try { this.ws?.close(4000, 'missing nonce'); } catch {}
+      return;
+    }
+
     const payload = buildDeviceAuthPayload({
-      version: nonce ? 'v2' : 'v1',
+      version: 'v2',
       deviceId: this._identity.deviceId,
       clientId,
       clientMode,
       role,
       scopes,
       signedAtMs,
-      token: authToken || '',
+      token: this.token || '',
       nonce
     });
 
     const params = {
       minProtocol: 3,
-      maxProtocol: 3,
+      maxProtocol: 3, 
       client: {
         id: clientId,
         version: 'dev',
@@ -246,7 +262,7 @@ export class GatewayWs {
       },
       caps: [],
       auth,
-      userAgent: `openclaw-monitor-dashboard/${process.version}`,
+      userAgent: `rev-monitor-dashboard/${os.hostname()}/${process.version}`,
       locale: 'en-US'
     };
 
@@ -273,9 +289,9 @@ export class GatewayWs {
 
     this.ws.on('open', async () => {
       this.onStatus?.({ connected: false, phase: 'ws-open' });
+      // Per gateway protocol: wait for `connect.challenge` before sending `connect`.
       this._connectSent = false;
       this._connectNonce = null;
-      await this._sendConnect();
     });
 
     this.ws.on('message', (data) => {

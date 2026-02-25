@@ -1,0 +1,9 @@
+{
+  "note": "Fill with manual model caps when gateway headers are unavailable.",
+  "defaults": {
+    "rpm": null,
+    "tpm": null,
+    "dailySpendCapUsd": null
+  },
+  "models": {}
+}

@@ -1,7 +1,9 @@
 import http from 'node:http';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import { openDb } from './db.js';
 import { GatewayWs } from './gatewayWs.js';
@@ -10,6 +12,7 @@ import { Poller } from './poller.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = join(__filename, '..');
 const projectRoot = join(__dirname, '..');
+const execFileAsync = promisify(execFile);
 
 function loadOpenclawConfig() {
   // Allow overrides so this repo is usable outside of an OpenClaw host.
@@ -39,6 +42,13 @@ function loadOpenclawConfig() {
 const { token, url: gatewayUrl, cfg } = loadOpenclawConfig();
 const { insertEvent, listEvents, insertSnapshot, latestSnapshot, latestEventForSession } = openDb(projectRoot);
 
+const usageCostCache = {
+  ts: 0,
+  data: null,
+  error: null,
+  inFlight: null
+};
+
 const state = {
   startedAt: Date.now(),
   gatewayConnected: false,
@@ -49,6 +59,49 @@ const state = {
   openclawVersion: cfg?.meta?.lastTouchedVersion ?? null,
   updateAvailable: null
 };
+
+function readOpenclawConfigFile() {
+  const p = join(process.env.HOME ?? '', '.openclaw', 'openclaw.json');
+  const raw = readFileSync(p, 'utf8');
+  return JSON.parse(raw);
+}
+
+async function getUsageCost() {
+  const now = Date.now();
+  const maxAgeMs = 60_000;
+
+  if (usageCostCache.data && (now - usageCostCache.ts) < maxAgeMs) {
+    return { ok: true, cached: true, stale: false, data: usageCostCache.data, error: null };
+  }
+
+  if (usageCostCache.inFlight) return usageCostCache.inFlight;
+
+  usageCostCache.inFlight = (async () => {
+    try {
+      const openclawPath = process.env.OPENCLAW_BIN || '/home/rev/.npm-global/bin/openclaw';
+      const { stdout } = await execFileAsync(openclawPath, ['gateway', 'usage-cost', '--json'], {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024
+      });
+      const parsed = JSON.parse(stdout.trim() || '{}');
+      usageCostCache.ts = Date.now();
+      usageCostCache.data = parsed;
+      usageCostCache.error = null;
+      return { ok: true, cached: false, stale: false, data: parsed, error: null };
+    } catch (err) {
+      const msg = String(err?.message ?? err);
+      usageCostCache.error = msg;
+      if (usageCostCache.data) {
+        return { ok: true, cached: true, stale: true, data: usageCostCache.data, error: msg };
+      }
+      return { ok: false, cached: false, stale: true, data: null, error: msg };
+    } finally {
+      usageCostCache.inFlight = null;
+    }
+  })();
+
+  return usageCostCache.inFlight;
+}
 
 function classify(ev) {
   const eventName = String(ev?.event ?? '');
@@ -198,6 +251,47 @@ const server = http.createServer(async (req, res) => {
       updateAvailable: state.updateAvailable,
       now: Date.now()
     });
+  }
+
+  if (urlObj.pathname === '/api/usage-cost') {
+    const data = await getUsageCost();
+    return sendJson(res, 200, data);
+  }
+
+  if (urlObj.pathname === '/api/model-catalog') {
+    try {
+      const cfgFile = cfg ?? readOpenclawConfigFile();
+      const defaults = cfgFile?.agents?.defaults?.model ?? {};
+      const primary = typeof defaults?.primary === 'string' ? defaults.primary : null;
+      const fallbacks = Array.isArray(defaults?.fallbacks) ? defaults.fallbacks.filter(Boolean) : [];
+      const providersObj = cfgFile?.models?.providers ?? {};
+      const providers = Object.entries(providersObj).map(([id, p]) => ({
+        id,
+        api: p?.api ?? null,
+        baseUrl: p?.baseUrl ?? null,
+        models: Array.isArray(p?.models) ? p.models : []
+      }));
+      const models = [];
+      for (const provider of providers) {
+        for (const m of provider.models) {
+          if (!m?.id) continue;
+          models.push({
+            ...m,
+            id: m.id,
+            provider: provider.id
+          });
+        }
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        primary,
+        fallbacks,
+        providers,
+        models
+      });
+    } catch (err) {
+      return sendJson(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
   }
 
   if (urlObj.pathname === '/api/events') {

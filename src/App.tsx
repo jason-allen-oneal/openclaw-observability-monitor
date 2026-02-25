@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { apiGet, ApiOverview, ApiStatus, EventRow, SnapshotRow } from './api';
+import { apiGet, ApiModelCatalog, ApiOverview, ApiStatus, ApiUsageCost, EventRow, SnapshotRow } from './api';
+import modelMetadata from './model-metadata.json';
 
-type Tab = 'overview' | 'sessions' | 'subagents' | 'cron' | 'feed' | 'search';
+type Tab = 'overview' | 'sessions' | 'subagents' | 'cron' | 'models' | 'feed' | 'search';
 
 function fmt(ts: number) {
   try { return new Date(ts).toLocaleString(); } catch { return String(ts); }
@@ -85,6 +86,7 @@ export default function App() {
           <button className={tab === 'sessions' ? 'active' : ''} onClick={() => setTab('sessions')}>Sessions</button>
           <button className={tab === 'subagents' ? 'active' : ''} onClick={() => setTab('subagents')}>Sub-agents</button>
           <button className={tab === 'cron' ? 'active' : ''} onClick={() => setTab('cron')}>Cron</button>
+          <button className={tab === 'models' ? 'active' : ''} onClick={() => setTab('models')}>Models</button>
           <button className={tab === 'feed' ? 'active' : ''} onClick={() => setTab('feed')}>Activity Feed</button>
           <button className={tab === 'search' ? 'active' : ''} onClick={() => setTab('search')}>Search</button>
         </div>
@@ -116,6 +118,7 @@ export default function App() {
           {tab === 'sessions' ? <Sessions /> : null}
           {tab === 'subagents' ? <Subagents /> : null}
           {tab === 'cron' ? <Cron /> : null}
+          {tab === 'models' ? <Models /> : null}
           {tab === 'search' ? <Search /> : null}
         </div>
       </div>
@@ -138,6 +141,12 @@ function msToHuman(ms: number) {
 function fmtPct(n: number) {
   if (!Number.isFinite(n)) return '—';
   return `${n.toFixed(2)}%`;
+}
+
+function fmtUsd(n: number | null | undefined) {
+  const val = Number(n);
+  if (!Number.isFinite(val)) return '—';
+  return `$${val.toFixed(4)}`;
 }
 
 function Overview() {
@@ -249,7 +258,7 @@ function Overview() {
 
         <div className="card">
           <div className="cardTitle">Top estimated cost</div>
-          <div className="small">Highest drift.cost (rough estimate).</div>
+          <div className="small">Local heuristic only; not gateway-billed.</div>
           <div style={{ marginTop: 10 }}>
             {ov?.sessions.topCost?.length ? (
               <table className="table">
@@ -264,14 +273,14 @@ function Overview() {
                   {ov.sessions.topCost.map((s: any) => (
                     <tr key={s.key}>
                       <td style={{ color: 'var(--accent)' }}>{s.key}</td>
-                      <td style={{ color: 'var(--ok)' }}>${s.drift?.cost?.toFixed(4) ?? '0.0000'}</td>
+                      <td style={{ color: 'var(--ok)' }}>{fmtUsd(s.drift?.cost)}</td>
                       <td className="small">{s.model ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             ) : (
-              <div className="small">No session drift data yet.</div>
+              <div className="small">No cost estimates available.</div>
             )}
           </div>
         </div>
@@ -352,6 +361,7 @@ function Sessions() {
           <div>
             <div className="cardTitle">Active sessions</div>
             <div className="small">Latest snapshot: {snap ? fmt(snap.ts) : '—'}</div>
+            <div className="small">Cost is estimated locally; see Models for billed totals.</div>
           </div>
           <button onClick={() => void refresh()}>Refresh</button>
         </div>
@@ -383,7 +393,7 @@ function Sessions() {
                   <span className="small">{s.drift?.pressure ?? 0}%</span>
                 </div>
               </td>
-              <td style={{ color: 'var(--ok)' }}>${s.drift?.cost?.toFixed(4) ?? '0.0000'}</td>
+              <td style={{ color: 'var(--ok)' }}>{fmtUsd(s.drift?.cost)}</td>
               <td className="small">{s.updatedAt ? fmt(s.updatedAt) : ''}</td>
             </tr>
           ))}
@@ -429,6 +439,7 @@ function Subagents() {
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="cardTitle">Sub-agents (sessions_spawn)</div>
         <div className="small">Latest snapshot: {snapTs ? fmt(snapTs) : '—'}</div>
+        <div className="small">Cost is estimated locally; see Models for billed totals.</div>
       </div>
 
       {rows.length === 0 ? <div className="small">No sub-agents found.</div> : null}
@@ -438,7 +449,7 @@ function Subagents() {
           <tr>
             <th>Label</th>
             <th>Pressure</th>
-            <th>Cost</th>
+            <th>Cost (est)</th>
             <th>Key</th>
             <th>Updated</th>
             <th>Last event</th>
@@ -456,7 +467,7 @@ function Subagents() {
                   <span className="small">{s.drift?.pressure ?? 0}%</span>
                 </div>
               </td>
-              <td style={{ color: 'var(--ok)' }}>${s.drift?.cost?.toFixed(4) ?? '0.0000'}</td>
+              <td style={{ color: 'var(--ok)' }}>{fmtUsd(s.drift?.cost)}</td>
               <td style={{ color: 'var(--accent)', fontSize: 11 }}>{s.key}</td>
               <td className="small">{s.updatedAt ? fmt(s.updatedAt) : ''}</td>
               <td className="small">{s.lastEvent?.summary ?? s.lastEvent?.event ?? ''}</td>
@@ -522,6 +533,332 @@ function Search() {
       <div className="small">
         Coming next: unified search across events/snapshots, then memory/workspace. For now, use Activity Feed filters.
       </div>
+    </div>
+  );
+}
+
+function normalizeUsageCost(raw: any) {
+  if (!raw || typeof raw !== 'object') return { totalCost: null, breakdown: [] as any[] };
+  const totalCost = raw.totalCost ?? raw.total?.cost ?? raw.cost ?? raw.total ?? null;
+  const source = raw.breakdown ?? raw.byModel ?? raw.models ?? raw.items ?? null;
+  if (Array.isArray(source)) return { totalCost, breakdown: source };
+  if (source && typeof source === 'object') {
+    return {
+      totalCost,
+      breakdown: Object.entries(source).map(([key, value]) => {
+        if (value && typeof value === 'object') return { model: key, ...value };
+        return { model: key, cost: value };
+      })
+    };
+  }
+  return { totalCost, breakdown: [] };
+}
+
+function findModelId(obj: any): string | null {
+  if (!obj) return null;
+  if (typeof obj === 'string') return null;
+  if (typeof obj !== 'object') return null;
+  const direct = obj.model ?? obj.modelId ?? obj.model_id ?? null;
+  if (typeof direct === 'string') return direct;
+  for (const val of Object.values(obj)) {
+    const found = findModelId(val);
+    if (found) return found;
+  }
+  return null;
+}
+
+function extractCapsFromObject(obj: any) {
+  const caps: { rpm?: number; tpm?: number; dailySpendCapUsd?: number } = {};
+  if (!obj || typeof obj !== 'object') return caps;
+
+  const walk = (node: any) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      const k = key.toLowerCase();
+      if (k.includes('ratelimit') || k.includes('rate_limit')) {
+        if (typeof value === 'string' || typeof value === 'number') {
+          const n = Number(value);
+          if (Number.isFinite(n)) {
+            if (k.includes('token') || k.includes('tpm')) caps.tpm = caps.tpm ?? n;
+            else if (k.includes('request') || k.includes('rpm')) caps.rpm = caps.rpm ?? n;
+          }
+        }
+      }
+      if (k.includes('daily') || k.includes('spend') || k.includes('budget')) {
+        if (typeof value === 'string' || typeof value === 'number') {
+          const n = Number(value);
+          if (Number.isFinite(n)) caps.dailySpendCapUsd = caps.dailySpendCapUsd ?? n;
+        }
+      }
+      if (typeof value === 'object') walk(value);
+    }
+  };
+  walk(obj);
+  return caps;
+}
+
+function Models() {
+  const [catalog, setCatalog] = useState<ApiModelCatalog | null>(null);
+  const [usage, setUsage] = useState<ApiUsageCost | null>(null);
+  const [snap, setSnap] = useState<SnapshotRow | null>(null);
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function refreshCatalog() {
+    try {
+      const res = await apiGet<ApiModelCatalog>('/api/model-catalog');
+      setCatalog(res);
+      setErr(null);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  async function refreshUsage() {
+    try {
+      const res = await apiGet<ApiUsageCost>('/api/usage-cost');
+      setUsage(res);
+      setErr(null);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  async function refreshSessions() {
+    try {
+      const res = await apiGet<{ snapshot: SnapshotRow | null }>('/api/snapshot/sessions');
+      setSnap(res.snapshot);
+      setErr(null);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  async function refreshEvents() {
+    try {
+      const res = await apiGet<{ events: EventRow[] }>('/api/events?limit=200');
+      setEvents(res.events ?? []);
+      setErr(null);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  useEffect(() => {
+    void refreshCatalog();
+    const t = setInterval(() => void refreshCatalog(), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    void refreshUsage();
+    const t = setInterval(() => void refreshUsage(), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    void refreshSessions();
+    const t = setInterval(() => void refreshSessions(), 8000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    void refreshEvents();
+    const t = setInterval(() => void refreshEvents(), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const payload = parseSnapshotPayload(snap);
+  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+  const modelsFromCatalog = Array.isArray(catalog?.models) ? catalog!.models! : [];
+  const modelIdsFromDefaults = [
+    ...(catalog?.primary ? [catalog.primary] : []),
+    ...(catalog?.fallbacks ?? [])
+  ].filter(Boolean);
+
+  const modelMap = new Map<string, any>();
+  for (const m of modelsFromCatalog) modelMap.set(m.id, { ...m });
+  for (const id of modelIdsFromDefaults) {
+    if (!modelMap.has(id)) modelMap.set(id, { id });
+  }
+  for (const s of sessions) {
+    if (s?.model && !modelMap.has(s.model)) modelMap.set(s.model, { id: s.model });
+  }
+
+  const capsByModel = new Map<string, { rpm?: number; tpm?: number; dailySpendCapUsd?: number; source?: string }>();
+  const sortedEvents = [...events].sort((a, b) => b.ts - a.ts);
+  for (const ev of sortedEvents) {
+    let payloadObj: any = null;
+    try { payloadObj = JSON.parse(ev.payloadJson); } catch { payloadObj = null; }
+    if (!payloadObj) continue;
+    const modelId = findModelId(payloadObj);
+    if (!modelId) continue;
+    if (capsByModel.has(modelId)) continue;
+    const caps = extractCapsFromObject(payloadObj);
+    if (caps.rpm || caps.tpm || caps.dailySpendCapUsd) {
+      capsByModel.set(modelId, { ...caps, source: 'auto' });
+    }
+  }
+
+  const usageNormalized = normalizeUsageCost(usage?.data);
+  const usageByModel = new Map<string, any>();
+  for (const item of usageNormalized.breakdown) {
+    const id = item?.model ?? item?.modelId ?? item?.id ?? item?.name ?? null;
+    if (!id) continue;
+    const cost = item?.cost ?? item?.totalCost ?? item?.usd ?? item?.amount ?? item?.total ?? null;
+    const inputTokens = item?.inputTokens ?? item?.promptTokens ?? item?.inTokens ?? null;
+    const outputTokens = item?.outputTokens ?? item?.completionTokens ?? item?.outTokens ?? null;
+    const totalTokens = (item?.totalTokens ?? (Number(inputTokens ?? 0) + Number(outputTokens ?? 0))) || null;
+    usageByModel.set(id, { cost, inputTokens, outputTokens, totalTokens });
+  }
+
+  const rows = [...modelMap.values()].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const warnings: string[] = [];
+  if (!usage?.ok) warnings.push('Usage cost unavailable; gateway CLI missing or failed.');
+  if (usage?.stale) warnings.push('Usage cost is stale; showing last cached snapshot.');
+  if (catalog && !catalog.ok) warnings.push('Model catalog unavailable; check ~/.openclaw/openclaw.json.');
+  if (!events.length) warnings.push('Rate limit detection inactive; no recent gateway events.');
+
+  let usedManualCaps = false;
+  const now = Date.now();
+
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {err ? <div className="card" style={{ borderColor: 'var(--danger)' }}>{err}</div> : null}
+      {warnings.length ? (
+        <div className="card" style={{ borderColor: 'var(--warn)' }}>
+          <div className="cardTitle">Warning</div>
+          <div className="small">{warnings.join(' ')}</div>
+        </div>
+      ) : null}
+
+      <div className="cards">
+        <div className="card">
+          <div className="cardTitle">Usage &amp; cost (daily)</div>
+          <div className="small">Gateway totals; refreshes every 30s.</div>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--ok)' }}>{fmtUsd(usageNormalized.totalCost)}</div>
+            <div className="small" style={{ marginTop: 6 }}>Total cost today</div>
+          </div>
+          <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
+            {usageNormalized.breakdown.length === 0 ? (
+              <div className="small">No breakdown available yet.</div>
+            ) : usageNormalized.breakdown.slice(0, 8).map((item, idx) => {
+              const label = item.model ?? item.modelId ?? item.id ?? item.name ?? `item-${idx}`;
+              const cost = item.cost ?? item.totalCost ?? item.usd ?? item.amount ?? item.total ?? null;
+              return (
+                <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <div className="small" style={{ color: 'var(--muted)' }}>{label}</div>
+                  <div className="small" style={{ color: 'var(--ok)' }}>{fmtUsd(cost)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="cardTitle">Defaults</div>
+          <div className="small">From openclaw.json.</div>
+          <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
+            <div>Primary: <span style={{ color: 'var(--accent)' }}>{catalog?.primary ?? '—'}</span></div>
+            <div>Fallbacks: <span style={{ color: 'var(--muted)' }}>{(catalog?.fallbacks ?? []).join(', ') || '—'}</span></div>
+            <div>Providers: <span style={{ color: 'var(--muted)' }}>{(catalog?.providers ?? []).map(p => p.id).join(', ') || '—'}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="cardTitle">Models</div>
+        <div className="small">Headroom uses max window; caps auto-detected when possible.</div>
+        <table className="table" style={{ marginTop: 10 }}>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Status</th>
+              <th>Context / Window</th>
+              <th>Usage &amp; Cost (daily)</th>
+              <th>API Caps</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m: any) => {
+              const sessionsForModel = sessions.filter((s: any) => s.model === m.id);
+              const updatedAt = Math.max(0, ...sessionsForModel.map((s: any) => Number(s.updatedAt ?? 0)));
+              const age = updatedAt ? now - updatedAt : Infinity;
+              const status = sessionsForModel.length === 0 ? (modelIdsFromDefaults.includes(m.id) ? 'configured' : 'idle')
+                : age < 15_000 ? 'hot'
+                  : age < 300_000 ? 'warm'
+                    : 'cold';
+              const statusClass = status === 'hot' ? 'status ok'
+                : status === 'warm' ? 'status warn'
+                  : status === 'configured' ? 'status accent'
+                    : 'status';
+
+              const usedTokens = Math.max(0, ...sessionsForModel.map((s: any) => Number(s.totalTokens ?? 0)));
+              const windowTokens = Number(
+                m.contextWindow ?? m.maxTokens ?? Math.max(0, ...sessionsForModel.map((s: any) => Number(s.contextTokens ?? 0)))
+              ) || 0;
+              const ratio = windowTokens > 0 ? Math.min(1, usedTokens / windowTokens) : 0;
+              const headroomPct = windowTokens > 0 ? ((1 - ratio) * 100) : 0;
+
+              let caps = capsByModel.get(m.id);
+              if (!caps) {
+                const manualModel = (modelMetadata as any).models?.[m.id];
+                const manual = manualModel ?? (modelMetadata as any).defaults ?? {};
+                const hasManual = Number.isFinite(manual?.rpm)
+                  || Number.isFinite(manual?.tpm)
+                  || Number.isFinite(manual?.dailySpendCapUsd);
+                caps = { ...manual, source: hasManual ? 'manual' : undefined };
+                if (hasManual) usedManualCaps = true;
+              }
+
+              const usageRow = usageByModel.get(m.id) ?? {};
+              const cost = usageRow.cost ?? null;
+              const totalTokens = usageRow.totalTokens ?? null;
+
+              return (
+                <tr key={m.id}>
+                  <td>
+                    <div style={{ color: 'var(--accent)', fontWeight: 700 }}>{m.id}</div>
+                    <div className="small" style={{ marginTop: 4 }}>{m.provider ?? '—'}</div>
+                  </td>
+                  <td><span className={statusClass}>{status.toUpperCase()}</span></td>
+                  <td>
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div className="small">{usedTokens.toLocaleString()} / {windowTokens ? windowTokens.toLocaleString() : '—'}</div>
+                      <div className="bar">
+                        <div className="barFill" style={{ width: `${ratio * 100}%` }} />
+                      </div>
+                      <div className="small">Headroom: {windowTokens ? `${headroomPct.toFixed(1)}%` : '—'}</div>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="small">Cost: <span style={{ color: 'var(--ok)' }}>{fmtUsd(cost)}</span></div>
+                    <div className="small">Tokens: <span style={{ color: 'var(--muted)' }}>{Number.isFinite(totalTokens) ? Number(totalTokens).toLocaleString() : '—'}</span></div>
+                  </td>
+                  <td>
+                    <div className="small">RPM: <span style={{ color: 'var(--muted)' }}>{caps?.rpm ?? '—'}</span></div>
+                    <div className="small">TPM: <span style={{ color: 'var(--muted)' }}>{caps?.tpm ?? '—'}</span></div>
+                    <div className="small">Cap: <span style={{ color: 'var(--muted)' }}>{Number.isFinite(caps?.dailySpendCapUsd) ? fmtUsd(caps?.dailySpendCapUsd) : '—'}</span></div>
+                    <div className="small">Source: <span style={{ color: 'var(--muted)' }}>{caps?.source ?? '—'}</span></div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {usedManualCaps ? (
+        <div className="card" style={{ borderColor: 'var(--warn)' }}>
+          <div className="cardTitle">Note</div>
+          <div className="small">Some caps are manual. Update `src/model-metadata.json` for better accuracy.</div>
+        </div>
+      ) : null}
     </div>
   );
 }
