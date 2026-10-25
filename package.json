@@ -20,5 +20,8 @@
     "@vitejs/plugin-react": "^4.3.2",
     "typescript": "^5.6.3",
     "vite": "^5.4.8"
+  },
+  "engines": {
+    "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
   }
 }
